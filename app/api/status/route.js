@@ -1,20 +1,28 @@
 import { sql } from '../../../lib/db.js';
 
-export async function GET() {
+export async function GET(request) {
   try {
-    const [stops, routes, trips, feeds] = await Promise.all([
-      sql`SELECT COUNT(*) as count FROM stops`,
-      sql`SELECT COUNT(*) as count FROM routes`,
-      sql`SELECT COUNT(*) as count FROM trips`,
-      sql`SELECT name, status, loaded_at, row_count FROM feed_sources ORDER BY name`,
-    ]);
+    const { searchParams } = new URL(request.url);
+    const feed = searchParams.get('feed') || '';
 
-    return Response.json({
-      stops: parseInt(stops[0].count),
-      routes: parseInt(routes[0].count),
-      trips: parseInt(trips[0].count),
-      feeds: feeds,
-    });
+    let result;
+    if (feed) {
+      result = await sql`
+        SELECT route_id, route_short_name, route_long_name, route_type, route_color, feed_source
+        FROM routes
+        WHERE feed_source = ${feed}
+        ORDER BY route_short_name
+        LIMIT 200
+      `;
+    } else {
+      result = await sql`
+        SELECT route_id, route_short_name, route_long_name, route_type, route_color, feed_source
+        FROM routes
+        ORDER BY feed_source, route_short_name
+        LIMIT 200
+      `;
+    }
+    return Response.json({ routes: result });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
