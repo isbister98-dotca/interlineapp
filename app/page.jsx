@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 
-const CHUNK_SIZE = 10000
+const CHUNK_SIZE = 5000
 
 const TABLE_SEQUENCE = [
   { key: 'feed_info',       label: 'Feed Info',       chunked: false },
@@ -16,21 +16,21 @@ const TABLE_SEQUENCE = [
   { key: 'fare_rules',      label: 'Fare Rules',       chunked: false },
   { key: 'stop_amenities',  label: 'Stop Amenities',   chunked: false },
   { key: 'shapes',          label: 'Shapes',           chunked: true  },
-  { key: 'stop_times',      label: 'Stop Times',       chunked: true  },
+  // stop_times is handled separately via Edge Function
 ]
 
-function StatusRow({ table, status }) {
+function ProgressRow({ table, status }) {
   const s = status[table.key]
   if (!s) return null
   const pct = s.total > 0 ? Math.round((s.inserted / s.total) * 100) : 0
   return (
     <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: s.chunked && !s.done ? '0.25rem' : 0 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: (s.chunked && !s.done && s.total > 0) ? '0.3rem' : 0 }}>
         <span style={{ color: s.done ? '#008000' : s.error ? '#c00' : '#555' }}>
           {s.done ? '✅' : s.error ? '❌' : '⏳'} {table.label}
         </span>
-        <span style={{ color: '#888', fontSize: '0.8rem' }}>
-          {s.error ? s.error : s.done ? `${s.inserted?.toLocaleString()} rows` : s.total > 0 ? `${s.inserted?.toLocaleString()} / ${s.total?.toLocaleString()}` : 'Loading...'}
+        <span style={{ color: '#888', fontSize: '0.78rem' }}>
+          {s.error ? s.error : s.done ? `${s.inserted?.toLocaleString()} rows` : s.total > 0 ? `${s.inserted?.toLocaleString()} / ${s.total?.toLocaleString()}` : 'loading...'}
         </span>
       </div>
       {s.chunked && !s.done && s.total > 0 && (
@@ -43,13 +43,14 @@ function StatusRow({ table, status }) {
 }
 
 export default function AdminPage() {
-  const [dbStatus, setDbStatus] = useState(null)
-  const [loadedFeeds, setLoadedFeeds] = useState([])
-  const [newUrl, setNewUrl] = useState('')
-  const [newName, setNewName] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [tableStatus, setTableStatus] = useState({})
-  const [overallStatus, setOverallStatus] = useState(null)
+  const [dbStatus, setDbStatus]         = useState(null)
+  const [loadedFeeds, setLoadedFeeds]   = useState([])
+  const [newUrl, setNewUrl]             = useState('')
+  const [newName, setNewName]           = useState('')
+  const [phase, setPhase]               = useState(null)
+  const [tableStatus, setTableStatus]   = useState({})
+  const [cacheMsg, setCacheMsg]         = useState(null)
+  const [stopTimesStatus, setStopTimesStatus] = useState({}) // feedUrl -> status
   const abortRef = useRef(false)
 
   useEffect(() => { fetchStatus() }, [])
@@ -67,54 +68,59 @@ export default function AdminPage() {
 
   async function loadTable(url, name, tableKey, chunked) {
     if (chunked) {
-      // Chunked loading for large tables
-      let offset = 0
-      let total = null
-      let totalInserted = 0
+      let offset = 0, total = null, totalInserted = 0
       while (true) {
         if (abortRef.current) throw new Error('Cancelled')
         const res = await fetch('/api/load-table', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, name, tableKey, offset, limit: CHUNK_SIZE })
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, name, tableKey, offset })
         })
         const data = await res.json()
         if (!data.success) throw new Error(data.error)
         total = data.total
         totalInserted += data.inserted
-        setTableStatus(prev => ({
-          ...prev,
-          [tableKey]: { inserted: totalInserted, total, done: data.done, chunked: true }
-        }))
+        setTableStatus(prev => ({ ...prev, [tableKey]: { inserted: totalInserted, total, done: data.done, chunked: true } }))
         if (data.done) break
-        offset += CHUNK_SIZE
+        offset++
       }
       return totalInserted
     } else {
-      // Single call for small tables
       const res = await fetch('/api/load-table', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, name, tableKey })
       })
       const data = await res.json()
       if (!data.success) throw new Error(data.error)
-      setTableStatus(prev => ({
-        ...prev,
-        [tableKey]: { inserted: data.inserted, total: data.total, done: true, chunked: false }
-      }))
+      setTableStatus(prev => ({ ...prev, [tableKey]: { inserted: data.inserted, total: data.total, done: true, chunked: false } }))
       return data.inserted
     }
   }
 
   async function startLoad() {
     if (!newUrl.trim() || !newName.trim()) return
-    setIsLoading(true)
-    setTableStatus({})
-    setOverallStatus('loading')
     abortRef.current = false
+    setTableStatus({})
+    setPhase('caching')
+    setCacheMsg('Downloading ZIP and caching all files... this may take 1–2 minutes for large feeds.')
 
     try {
+      // Phase 1: Cache the ZIP
+      const cacheRes = await fetch('/api/cache-zip', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: newUrl.trim(), name: newName.trim() })
+      })
+      const cacheData = await cacheRes.json()
+      if (!cacheData.success) throw new Error(cacheData.error)
+
+      const stopTimesRows = cacheData.fileSizes?.stop_times
+      const fileList = Object.entries(cacheData.fileSizes)
+        .filter(([k]) => !k.endsWith('_note'))
+        .map(([f, n]) => `${f} (${Number(n).toLocaleString()})`)
+        .join(', ')
+      setCacheMsg(`✅ Cached: ${fileList}`)
+
+      // Phase 2: Load tables from cache
+      setPhase('loading')
       for (const table of TABLE_SEQUENCE) {
         if (abortRef.current) break
         setTableStatus(prev => ({ ...prev, [table.key]: { inserted: 0, total: 0, done: false, chunked: table.chunked } }))
@@ -122,58 +128,70 @@ export default function AdminPage() {
           await loadTable(newUrl.trim(), newName.trim(), table.key, table.chunked)
         } catch (e) {
           setTableStatus(prev => ({ ...prev, [table.key]: { ...prev[table.key], error: e.message, done: false } }))
-          // Continue loading other tables even if one fails
         }
       }
-      setOverallStatus('done')
+
+      setPhase('done')
       setNewUrl('')
       setNewName('')
       fetchStatus()
     } catch (e) {
-      setOverallStatus('error')
+      setCacheMsg(`❌ Failed: ${e.message}`)
+      setPhase('error')
     }
-    setIsLoading(false)
   }
 
-  function cancelLoad() {
-    abortRef.current = true
-    setIsLoading(false)
-    setOverallStatus('cancelled')
+  async function loadStopTimes(feed, forceReload = false) {
+    setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'loading', message: 'Triggering Edge Function...' } }))
+    try {
+      const res = await fetch('/api/trigger-stop-times', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedUrl: feed.url, feedName: feed.name, forceReload })
+      })
+      const data = await res.json()
+      if (data.success) {
+        if (data.skipped) {
+          setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'skipped', message: data.message } }))
+        } else {
+          setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'done', message: `✅ Loaded ${data.inserted?.toLocaleString()} rows (version ${data.version})` } }))
+        }
+      } else {
+        setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'error', message: data.error } }))
+      }
+      fetchStatus()
+    } catch (e) {
+      setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'error', message: e.message } }))
+    }
   }
 
+  const isActive = phase === 'caching' || phase === 'loading'
   const completedTables = Object.values(tableStatus).filter(s => s.done).length
-  const totalTables = TABLE_SEQUENCE.length
 
   return (
-    <div style={{ maxWidth: 860, margin: '0 auto', padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
+    <div style={{ maxWidth: 880, margin: '0 auto', padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
 
-      {/* Header */}
       <h1 style={{ color: '#1a1a1a', borderBottom: '3px solid #0070f3', paddingBottom: '0.5rem', marginBottom: '0.25rem' }}>
         🚌 InterlineApp
       </h1>
       <p style={{ color: '#666', marginTop: 0, marginBottom: '1.5rem' }}>
-        GTFS transit data loader — add any agency by pasting a GTFS feed URL below.
+        GTFS transit data loader — add any agency by pasting a GTFS feed URL.
       </p>
 
-      {/* Database Status */}
+      {/* DB Status */}
       <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
         <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>📊 Database Status</h2>
-        {!dbStatus ? (
-          <p style={{ color: '#888', margin: 0, fontSize: '0.9rem' }}>Checking connection...</p>
-        ) : dbStatus.error ? (
-          <p style={{ color: '#c00', margin: 0, fontSize: '0.9rem' }}>{dbStatus.error}</p>
-        ) : (
+        {!dbStatus ? <p style={{ color: '#888', margin: 0, fontSize: '0.9rem' }}>Checking...</p>
+        : dbStatus.error ? <p style={{ color: '#c00', margin: 0, fontSize: '0.9rem' }}>{dbStatus.error}</p>
+        : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
             {[
-              { label: 'Stops', value: dbStatus.stops },
-              { label: 'Routes', value: dbStatus.routes },
-              { label: 'Trips', value: dbStatus.trips },
+              { label: 'Stops',      value: dbStatus.stops },
+              { label: 'Routes',     value: dbStatus.routes },
+              { label: 'Trips',      value: dbStatus.trips },
               { label: 'Stop Times', value: dbStatus.stop_times },
             ].map(item => (
               <div key={item.label} style={{ textAlign: 'center', padding: '0.5rem', background: '#f9f9f9', borderRadius: 6 }}>
-                <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0070f3' }}>
-                  {item.value?.toLocaleString() ?? '—'}
-                </div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0070f3' }}>{item.value?.toLocaleString() ?? '—'}</div>
                 <div style={{ fontSize: '0.75rem', color: '#888' }}>{item.label}</div>
               </div>
             ))}
@@ -184,54 +202,39 @@ export default function AdminPage() {
         </button>
       </div>
 
-      {/* Add New Feed */}
+      {/* Add Feed */}
       <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
-        <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>➕ Add GTFS Feed</h2>
-        <p style={{ color: '#666', fontSize: '0.85rem', margin: '0 0 0.75rem' }}>
-          Paste any GTFS ZIP URL and give it a name. Each table loads separately so there are no timeouts.
+        <h2 style={{ margin: '0 0 0.5rem', fontSize: '1rem' }}>➕ Load GTFS Feed</h2>
+        <p style={{ color: '#666', fontSize: '0.83rem', margin: '0 0 0.75rem' }}>
+          Downloads the ZIP once, caches it, then loads each table separately. Stop times are loaded via the Edge Function below.
         </p>
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-          <input
-            type="text"
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            placeholder="Agency name (e.g. TTC)"
-            disabled={isLoading}
-            style={{ width: 180, padding: '0.5rem', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.9rem' }}
-          />
-          <input
-            type="text"
-            value={newUrl}
-            onChange={e => setNewUrl(e.target.value)}
-            placeholder="GTFS ZIP URL"
-            disabled={isLoading}
-            style={{ flex: 1, minWidth: 280, padding: '0.5rem', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.9rem' }}
-          />
-          <button
-            onClick={isLoading ? cancelLoad : startLoad}
-            disabled={!isLoading && (!newUrl.trim() || !newName.trim())}
+          <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
+            placeholder="Agency name (e.g. TTC)" disabled={isActive}
+            style={{ width: 180, padding: '0.5rem', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.9rem' }} />
+          <input type="text" value={newUrl} onChange={e => setNewUrl(e.target.value)}
+            placeholder="GTFS ZIP URL" disabled={isActive}
+            style={{ flex: 1, minWidth: 260, padding: '0.5rem', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.9rem' }} />
+          <button onClick={isActive ? () => { abortRef.current = true; setPhase('cancelled') } : startLoad}
+            disabled={!isActive && (!newUrl.trim() || !newName.trim())}
             style={{
               padding: '0.5rem 1.25rem',
-              background: isLoading ? '#c00' : (!newUrl.trim() || !newName.trim()) ? '#ccc' : '#0070f3',
-              color: '#fff', border: 'none', borderRadius: 6,
-              cursor: (!isLoading && (!newUrl.trim() || !newName.trim())) ? 'not-allowed' : 'pointer',
-              fontWeight: 'bold', whiteSpace: 'nowrap'
-            }}
-          >
-            {isLoading ? '⏹ Cancel' : 'Load Feed'}
+              background: isActive ? '#c00' : (!newUrl.trim() || !newName.trim()) ? '#ccc' : '#0070f3',
+              color: '#fff', border: 'none', borderRadius: 6, fontWeight: 'bold',
+              cursor: (!isActive && (!newUrl.trim() || !newName.trim())) ? 'not-allowed' : 'pointer'
+            }}>
+            {isActive ? '⏹ Cancel' : 'Load Feed'}
           </button>
         </div>
-
-        {/* Quick-add buttons */}
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.75rem', color: '#aaa', alignSelf: 'center' }}>Quick add:</span>
           {[
             { name: 'GO Transit', url: 'https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip' },
             { name: 'UP Express', url: 'https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/UP-GTFS.zip' },
-            { name: 'MiApp', url: 'https://www.miapp.ca/GTFS/google_transit.zip' },
-            { name: 'TTC', url: 'http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip' },
+            { name: 'MiApp',      url: 'https://www.miapp.ca/GTFS/google_transit.zip' },
+            { name: 'TTC',        url: 'http://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip' },
           ].map(f => (
-            <button key={f.name} onClick={() => { setNewName(f.name); setNewUrl(f.url) }} disabled={isLoading}
+            <button key={f.name} onClick={() => { setNewName(f.name); setNewUrl(f.url) }} disabled={isActive}
               style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', border: '1px solid #ccc', borderRadius: 4, background: '#f9f9f9', cursor: 'pointer' }}>
               {f.name}
             </button>
@@ -239,27 +242,85 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* Live Progress */}
-      {Object.keys(tableStatus).length > 0 && (
+      {/* Loading Progress */}
+      {phase && (
         <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
             <h2 style={{ margin: 0, fontSize: '1rem' }}>
-              {overallStatus === 'done' ? '✅' : overallStatus === 'cancelled' ? '⏹' : '⏳'} Loading Progress
+              {phase === 'done' ? '✅' : phase === 'error' ? '❌' : phase === 'cancelled' ? '⏹' : '⏳'} Loading Progress
             </h2>
-            <span style={{ fontSize: '0.8rem', color: '#888' }}>{completedTables} / {totalTables} tables</span>
+            {phase === 'loading' && <span style={{ fontSize: '0.8rem', color: '#888' }}>{completedTables} / {TABLE_SEQUENCE.length} tables</span>}
           </div>
-          {/* Overall progress bar */}
-          <div style={{ height: 6, background: '#eee', borderRadius: 3, marginBottom: '0.75rem' }}>
-            <div style={{ height: 6, width: `${(completedTables / totalTables) * 100}%`, background: overallStatus === 'done' ? '#008000' : '#0070f3', borderRadius: 3, transition: 'width 0.3s' }} />
+
+          {/* Cache phase status */}
+          <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #f0f0f0', fontSize: '0.85rem',
+            color: cacheMsg?.startsWith('✅') ? '#008000' : cacheMsg?.startsWith('❌') ? '#c00' : '#555' }}>
+            {cacheMsg || 'Preparing...'}
           </div>
-          {TABLE_SEQUENCE.map(table => (
-            <StatusRow key={table.key} table={table} status={tableStatus} />
-          ))}
-          {overallStatus === 'done' && (
+
+          {phase !== 'caching' && (
+            <>
+              <div style={{ height: 5, background: '#eee', borderRadius: 3, margin: '0.5rem 0' }}>
+                <div style={{ height: 5, width: `${(completedTables / TABLE_SEQUENCE.length) * 100}%`,
+                  background: phase === 'done' ? '#008000' : '#0070f3', borderRadius: 3, transition: 'width 0.3s' }} />
+              </div>
+              {TABLE_SEQUENCE.map(t => <ProgressRow key={t.key} table={t} status={tableStatus} />)}
+              {/* Stop times note */}
+              <div style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#888', fontStyle: 'italic' }}>
+                ⚡ Stop Times — load separately using the Edge Function section below
+              </div>
+            </>
+          )}
+          {phase === 'done' && (
             <p style={{ margin: '0.75rem 0 0', fontSize: '0.85rem', color: '#008000', fontWeight: 'bold' }}>
-              ✅ Feed loaded successfully! Click "Refresh counts" above to see updated totals.
+              ✅ All tables loaded! Now load Stop Times below using the Edge Function.
             </p>
           )}
+        </div>
+      )}
+
+      {/* Stop Times — Edge Function */}
+      {loadedFeeds.filter(f => f.status === 'loaded' || f.status === 'cached').length > 0 && (
+        <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
+          <h2 style={{ margin: '0 0 0.25rem', fontSize: '1rem' }}>⚡ Stop Times (Edge Function)</h2>
+          <p style={{ color: '#666', fontSize: '0.83rem', margin: '0 0 0.75rem' }}>
+            Stop times are loaded via Supabase Edge Function — handles large files (200MB+) with no timeout.
+            Automatically skips if the feed version hasn't changed.
+          </p>
+          {loadedFeeds.filter(f => f.status === 'loaded' || f.status === 'cached').map(feed => {
+            const st = stopTimesStatus[feed.url]
+            return (
+              <div key={feed.url} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0', borderBottom: '1px solid #f5f5f5', flexWrap: 'wrap' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{feed.name}</div>
+                  {st && (
+                    <div style={{ fontSize: '0.78rem', marginTop: 2,
+                      color: st.status === 'done' ? '#008000' : st.status === 'error' ? '#c00' : st.status === 'skipped' ? '#888' : '#555' }}>
+                      {st.message}
+                    </div>
+                  )}
+                  {feed.stop_times_loaded_at && !st && (
+                    <div style={{ fontSize: '0.75rem', color: '#aaa' }}>
+                      Last loaded: {new Date(feed.stop_times_loaded_at).toLocaleString()} • {feed.stop_times_row_count?.toLocaleString()} rows
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button onClick={() => loadStopTimes(feed, false)}
+                    disabled={st?.status === 'loading'}
+                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer' }}>
+                    {st?.status === 'loading' ? '⏳ Loading...' : 'Load / Update'}
+                  </button>
+                  <button onClick={() => loadStopTimes(feed, true)}
+                    disabled={st?.status === 'loading'}
+                    title="Force reload even if version unchanged"
+                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', background: '#fff', color: '#666', border: '1px solid #ccc', borderRadius: 5, cursor: 'pointer' }}>
+                    Force Reload
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -267,35 +328,36 @@ export default function AdminPage() {
       {loadedFeeds.length > 0 && (
         <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
           <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>📡 Loaded Feeds</h2>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.83rem' }}>
             <thead>
               <tr style={{ background: '#f5f5f5' }}>
-                {['Agency', 'Status', 'Loaded At', 'Row Count'].map(h => (
-                  <th key={h} style={{ padding: '0.5rem', textAlign: 'left', borderBottom: '1px solid #ddd' }}>{h}</th>
+                {['Agency','Version','Status','Last Checked','Rows'].map(h => (
+                  <th key={h} style={{ padding: '0.45rem 0.5rem', textAlign: 'left', borderBottom: '1px solid #ddd', fontWeight: 600 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {loadedFeeds.map((feed, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '0.5rem', fontWeight: 'bold' }}>{feed.name}</td>
-                  <td style={{ padding: '0.5rem', color: feed.status === 'loaded' ? '#008000' : '#888' }}>
-                    {feed.status === 'loaded' ? '✅ Loaded' : feed.status}
+              {loadedFeeds.map((f, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid #f5f5f5' }}>
+                  <td style={{ padding: '0.45rem 0.5rem', fontWeight: 'bold' }}>{f.name}</td>
+                  <td style={{ padding: '0.45rem 0.5rem', color: '#888', fontSize: '0.78rem' }}>{f.feed_version || '—'}</td>
+                  <td style={{ padding: '0.45rem 0.5rem', color: f.status === 'loaded' ? '#008000' : '#888' }}>
+                    {f.status === 'loaded' ? '✅ Loaded' : f.status}
                   </td>
-                  <td style={{ padding: '0.5rem', color: '#888' }}>
-                    {feed.loaded_at ? new Date(feed.loaded_at).toLocaleString() : '—'}
+                  <td style={{ padding: '0.45rem 0.5rem', color: '#aaa', fontSize: '0.78rem' }}>
+                    {f.last_version_check ? new Date(f.last_version_check).toLocaleDateString() : 'Never'}
                   </td>
-                  <td style={{ padding: '0.5rem', color: '#888' }}>
-                    {feed.row_count?.toLocaleString() ?? '—'}
-                  </td>
+                  <td style={{ padding: '0.45rem 0.5rem', color: '#888' }}>{f.row_count?.toLocaleString() ?? '—'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <p style={{ margin: '0.5rem 0 0', fontSize: '0.75rem', color: '#aaa' }}>
+            🕒 Nightly cron runs at 3am UTC — automatically reloads any feed whose version has changed.
+          </p>
         </div>
       )}
 
-      {/* Stop Search */}
       <StopSearch />
 
       <p style={{ color: '#bbb', fontSize: '0.75rem', textAlign: 'center', marginTop: '2rem' }}>
@@ -306,8 +368,8 @@ export default function AdminPage() {
 }
 
 function StopSearch() {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState(null)
+  const [query, setQuery]         = useState('')
+  const [results, setResults]     = useState(null)
   const [searching, setSearching] = useState(false)
 
   async function search() {
@@ -315,11 +377,8 @@ function StopSearch() {
     setSearching(true)
     try {
       const res = await fetch(`/api/stops?q=${encodeURIComponent(query)}`)
-      const data = await res.json()
-      setResults(data)
-    } catch (e) {
-      setResults({ error: e.message })
-    }
+      setResults(await res.json())
+    } catch (e) { setResults({ error: e.message }) }
     setSearching(false)
   }
 
@@ -327,13 +386,10 @@ function StopSearch() {
     <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
       <h2 style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>🔍 Search Stops</h2>
       <div style={{ display: 'flex', gap: '0.5rem' }}>
-        <input
-          type="text" value={query}
-          onChange={e => setQuery(e.target.value)}
+        <input type="text" value={query} onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}
           placeholder="e.g. Union Station, Kipling, Finch..."
-          style={{ flex: 1, padding: '0.5rem', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.9rem' }}
-        />
+          style={{ flex: 1, padding: '0.5rem', border: '1px solid #ccc', borderRadius: 6, fontSize: '0.9rem' }} />
         <button onClick={search} disabled={searching}
           style={{ padding: '0.5rem 1rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}>
           {searching ? '...' : 'Search'}
@@ -347,7 +403,7 @@ function StopSearch() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
               <thead>
                 <tr style={{ background: '#f5f5f5' }}>
-                  {['Stop Name', 'Feed', 'Code', 'Lat / Lon'].map(h => (
+                  {['Stop Name','Feed','Code','Lat / Lon'].map(h => (
                     <th key={h} style={{ padding: '0.4rem 0.5rem', textAlign: 'left', borderBottom: '1px solid #ddd' }}>{h}</th>
                   ))}
                 </tr>
