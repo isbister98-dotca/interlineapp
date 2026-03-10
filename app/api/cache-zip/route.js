@@ -31,10 +31,13 @@ export async function POST(request) {
 
     for (const entry of zip.getEntries()) {
       if (!entry.entryName.endsWith('.txt')) continue;
-      const filename = entry.entryName.toLowerCase().replace(/^.*\//, '').replace('.txt', '');
+      const filename = entry.entryName.toLowerCase().replace(/^.*\//, '').replace('.txt', '')
+        .replace('stop_amentities', 'stop_amenities'); // GO Transit typo fix
 
       try {
-        const content = entry.getData().toString('utf8');
+        const rawContent = entry.getData().toString('utf8');
+        // Strip UTF-8 BOM if present (GO Transit files have this)
+        const content = rawContent.charCodeAt(0) === 0xFEFF ? rawContent.slice(1) : rawContent;
 
         if (SKIP_FILES.includes(filename)) {
           // Parse just to count rows, don't cache — Edge Function handles this
