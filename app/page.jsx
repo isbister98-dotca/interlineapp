@@ -191,7 +191,9 @@ export default function AdminPage() {
               { label: 'Stop Times', value: dbStatus.stop_times },
             ].map(item => (
               <div key={item.label} style={{ textAlign: 'center', padding: '0.5rem', background: '#f9f9f9', borderRadius: 6 }}>
-                <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0070f3' }}>{item.value?.toLocaleString() ?? '—'}</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0070f3' }}>
+                  {typeof item.value === 'number' ? item.value.toLocaleString() : '—'}
+                </div>
                 <div style={{ fontSize: '0.75rem', color: '#888' }}>{item.label}</div>
               </div>
             ))}
@@ -280,14 +282,15 @@ export default function AdminPage() {
       )}
 
       {/* Stop Times — Edge Function */}
-      {loadedFeeds.filter(f => f.status === 'loaded' || f.status === 'cached').length > 0 && (
-        <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
-          <h2 style={{ margin: '0 0 0.25rem', fontSize: '1rem' }}>⚡ Stop Times (Edge Function)</h2>
-          <p style={{ color: '#666', fontSize: '0.83rem', margin: '0 0 0.75rem' }}>
-            Stop times are loaded via Supabase Edge Function — handles large files (200MB+) with no timeout.
-            Automatically skips if the feed version hasn't changed.
-          </p>
-          {loadedFeeds.filter(f => f.status === 'loaded' || f.status === 'cached').map(feed => {
+      <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
+        <h2 style={{ margin: '0 0 0.25rem', fontSize: '1rem' }}>⚡ Stop Times (Edge Function)</h2>
+        <p style={{ color: '#666', fontSize: '0.83rem', margin: '0 0 0.75rem' }}>
+          Stop times are loaded via Supabase Edge Function — handles large files (200MB+) with no timeout.
+          Automatically skips if the feed version hasn't changed.
+        </p>
+        {loadedFeeds.length === 0 ? (
+          <p style={{ color: '#aaa', fontSize: '0.85rem', margin: 0 }}>No feeds loaded yet — load a feed above first.</p>
+        ) : loadedFeeds.map(feed => {
             const st = stopTimesStatus[feed.url]
             return (
               <div key={feed.url} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0', borderBottom: '1px solid #f5f5f5', flexWrap: 'wrap' }}>
@@ -318,11 +321,9 @@ export default function AdminPage() {
                     Force Reload
                   </button>
                 </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
 
       {/* Loaded Feeds */}
       {loadedFeeds.length > 0 && (
