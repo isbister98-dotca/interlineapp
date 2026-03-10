@@ -321,8 +321,9 @@ export default function AdminPage() {
                     Force Reload
                   </button>
                 </div>
-          </div>
-        ))}
+              </div>
+            )
+          })}
       </div>
 
       {/* Loaded Feeds */}
