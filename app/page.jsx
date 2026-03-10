@@ -142,26 +142,50 @@ export default function AdminPage() {
   }
 
   async function loadStopTimes(feed, forceReload = false) {
-    setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'loading', message: 'Triggering Edge Function...' } }))
+    setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'loading', message: 'Triggering Edge Function...', currentRows: 0 } }))
     try {
+      // Fire and forget
       const res = await fetch('/api/trigger-stop-times', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ feedUrl: feed.url, feedName: feed.name, forceReload })
       })
       const data = await res.json()
-      if (data.success) {
-        if (data.skipped) {
-          setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'skipped', message: data.message } }))
-        } else {
-          setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'done', message: `✅ Loaded ${data.inserted?.toLocaleString()} rows (version ${data.version})` } }))
-        }
-      } else {
+      if (!data.success) {
         setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'error', message: data.error } }))
+        return
       }
-      fetchStatus()
+      // Start polling
+      setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'loading', message: 'Edge Function running — checking progress...', currentRows: 0 } }))
+      pollStopTimes(feed.url)
     } catch (e) {
       setStopTimesStatus(prev => ({ ...prev, [feed.url]: { status: 'error', message: e.message } }))
     }
+  }
+
+  function pollStopTimes(feedUrl) {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/stop-times-status?feedUrl=${encodeURIComponent(feedUrl)}`)
+        const data = await res.json()
+        if (data.error) {
+          clearInterval(interval)
+          setStopTimesStatus(prev => ({ ...prev, [feedUrl]: { status: 'error', message: data.error } }))
+          return
+        }
+        if (data.status === 'loaded') {
+          clearInterval(interval)
+          setStopTimesStatus(prev => ({ ...prev, [feedUrl]: { status: 'done', message: `✅ Loaded ${data.rowCount?.toLocaleString()} rows (version ${data.feedVersion})` } }))
+          fetchStatus()
+        } else if (data.status === 'loading') {
+          setStopTimesStatus(prev => ({ ...prev, [feedUrl]: { status: 'loading', message: `⏳ Loading... ${data.currentRows?.toLocaleString()} rows so far`, currentRows: data.currentRows } }))
+        } else if (data.status === 'error') {
+          clearInterval(interval)
+          setStopTimesStatus(prev => ({ ...prev, [feedUrl]: { status: 'error', message: 'Edge Function reported an error — check Supabase logs' } }))
+        }
+      } catch (e) {
+        // Keep polling even on network hiccups
+      }
+    }, 5000) // Poll every 5 seconds
   }
 
   const isActive = phase === 'caching' || phase === 'loading'
