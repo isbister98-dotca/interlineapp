@@ -16,11 +16,14 @@ const TABLE_COLUMNS = {
   fare_rules:      { table: 'fare_rules',      file: 'fare_rules',     columns: ['fare_id','origin_id','destination_id'], conflict: null },
 };
 
-async function bulkInsert(tableName, columns, rows, feedSource, conflictClause) {
+async function bulkInsert(tableName, columns, rows, feedSource, isFirstChunk = false) {
   if (!rows || rows.length === 0) return 0;
   const BATCH = 500;
   let inserted = 0;
-  const conflict = conflictClause || 'ON CONFLICT DO NOTHING';
+  // Delete existing rows for this feed on first chunk only
+  if (isFirstChunk) {
+    await sql.unsafe(`DELETE FROM ${tableName} WHERE feed_source = '${feedSource.replace(/'/g, "''")}'`);
+  }
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
     const values = batch.map(row =>
@@ -29,7 +32,7 @@ async function bulkInsert(tableName, columns, rows, feedSource, conflictClause) 
         .join(',')})`
     ).join(',');
     const colList = ['feed_source', ...columns].join(',');
-    await sql.unsafe(`INSERT INTO ${tableName} (${colList}) VALUES ${values} ${conflict}`);
+    await sql.unsafe(`INSERT INTO ${tableName} (${colList}) VALUES ${values}`);
     inserted += batch.length;
   }
   return inserted;
@@ -52,7 +55,6 @@ export async function POST(request) {
 
     if (def.chunked) {
       // ── Chunked file (shapes) ──
-      // Read metadata to get total info
       const metaResult = await sql`
         SELECT content FROM gtfs_cache WHERE feed_url = ${url} AND filename = ${def.file + '_meta'}
       `;
@@ -66,7 +68,6 @@ export async function POST(request) {
       const totalChunks = meta.totalChunks;
       const chunkKey = `${def.file}_chunk_${offset}`;
 
-      // Fetch this specific chunk
       const chunkResult = await sql`
         SELECT content FROM gtfs_cache WHERE feed_url = ${url} AND filename = ${chunkKey}
       `;
@@ -75,9 +76,16 @@ export async function POST(request) {
         return Response.json({ success: true, inserted: 0, total, done: true, message: `Chunk ${offset} not found` });
       }
 
-      // Chunks are stored as pre-parsed JSON arrays
       rows = JSON.parse(chunkResult[0].content);
       done = offset >= totalChunks - 1;
+      const inserted = await bulkInsert(def.table, def.columns, rows, name, offset === 0);
+      
+      if (done) {
+        await sql`UPDATE feed_sources SET status = 'loaded', loaded_at = NOW() WHERE url = ${url}`;
+        await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
+      }
+
+      return Response.json({ success: true, inserted, total, done, offset });
 
     } else {
       // ── Regular full-text file ──
@@ -89,48 +97,40 @@ export async function POST(request) {
         return Response.json({ success: true, inserted: 0, total: 0, done: true, message: `${def.file}.txt not found in this feed` });
       }
 
-      rows = parse(cached[0].content, {
+      const rawContent = cached[0].content;
+      const cleanContent = rawContent.charCodeAt(0) === 0xFEFF ? rawContent.slice(1) : rawContent;
+      rows = parse(cleanContent, {
         columns: true, skip_empty_lines: true, trim: true,
         relax_column_count: true, relax_quotes: true, skip_records_with_error: true
       });
       total = rows.length;
       done = true;
-    }
 
-    // Boolean conversion for calendar
-    if (tableKey === 'calendar') {
-      rows = rows.map(r => ({
-        ...r,
-        monday: r.monday === '1' ? 'true' : 'false',
-        tuesday: r.tuesday === '1' ? 'true' : 'false',
-        wednesday: r.wednesday === '1' ? 'true' : 'false',
-        thursday: r.thursday === '1' ? 'true' : 'false',
-        friday: r.friday === '1' ? 'true' : 'false',
-        saturday: r.saturday === '1' ? 'true' : 'false',
-        sunday: r.sunday === '1' ? 'true' : 'false',
-      }));
-    }
-
-    // Store feed_version when loading feed_info
-    if (tableKey === 'feed_info' && rows.length > 0) {
-      const version = rows[0].feed_version || null;
-      if (version) {
-        await sql`UPDATE feed_sources SET feed_version = ${version} WHERE url = ${url}`;
+      // Boolean conversion for calendar
+      if (tableKey === 'calendar') {
+        rows = rows.map(r => ({
+          ...r,
+          monday: r.monday === '1' ? 'true' : 'false',
+          tuesday: r.tuesday === '1' ? 'true' : 'false',
+          wednesday: r.wednesday === '1' ? 'true' : 'false',
+          thursday: r.thursday === '1' ? 'true' : 'false',
+          friday: r.friday === '1' ? 'true' : 'false',
+          saturday: r.saturday === '1' ? 'true' : 'false',
+          sunday: r.sunday === '1' ? 'true' : 'false',
+        }));
       }
+
+      // Store feed_version when loading feed_info
+      if (tableKey === 'feed_info' && rows.length > 0) {
+        const version = rows[0].feed_version || null;
+        if (version) {
+          await sql`UPDATE feed_sources SET feed_version = ${version} WHERE url = ${url}`;
+        }
+      }
+
+      const inserted = await bulkInsert(def.table, def.columns, rows, name, true);
+      return Response.json({ success: true, inserted, total, done, offset });
     }
-
-    const inserted = await bulkInsert(def.table, def.columns, rows, name, def.conflict);
-
-    // Mark feed as loaded (non-stop_times tables) when shapes finishes
-    if (done && tableKey === 'shapes') {
-      await sql`
-        UPDATE feed_sources SET status = 'loaded', loaded_at = NOW() WHERE url = ${url}
-      `;
-      // Clean up cache now that all tables are done
-      await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
-    }
-
-    return Response.json({ success: true, inserted, total, done, offset });
   } catch (error) {
     console.error('load-table error:', error);
     return Response.json({ success: false, error: error.message }, { status: 500 });
