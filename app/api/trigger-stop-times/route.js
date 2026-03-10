@@ -1,6 +1,7 @@
 import { sql } from '../../../lib/db.js';
 
-// Triggers the Supabase Edge Function to load stop_times for a given feed
+// Fires the Supabase Edge Function without waiting for it to complete.
+// The frontend polls /api/stop-times-status for progress instead.
 export async function POST(request) {
   try {
     const { feedUrl, feedName, forceReload = false } = await request.json();
@@ -10,26 +11,25 @@ export async function POST(request) {
     const supabaseKey = process.env.APP_SERVICE_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
-      return Response.json({
-        success: false,
-        error: 'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in Vercel environment variables'
-      }, { status: 500 });
+      return Response.json({ success: false, error: 'APP_DB_URL and APP_SERVICE_KEY must be set in Vercel environment variables' }, { status: 500 });
     }
 
-    // Call the Supabase Edge Function
+    // Mark as loading immediately
+    await sql`UPDATE feed_sources SET stop_times_status = 'loading' WHERE url = ${feedUrl}`;
+
+    // Fire and forget — don't await the edge function
     const edgeFnUrl = `${supabaseUrl}/functions/v1/load-stop-times`;
-    const response = await fetch(edgeFnUrl, {
+    fetch(edgeFnUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${supabaseKey}`,
       },
       body: JSON.stringify({ feedUrl, feedName, forceReload }),
-      signal: AbortSignal.timeout(180000), // 3 min timeout waiting for Edge Fn
-    });
+    }).catch(err => console.error('Edge function error:', err));
 
-    const data = await response.json();
-    return Response.json(data);
+    // Return immediately — frontend will poll for progress
+    return Response.json({ success: true, fired: true, message: 'Edge function triggered — polling for progress' });
   } catch (error) {
     console.error('trigger-stop-times error:', error);
     return Response.json({ success: false, error: error.message }, { status: 500 });
