@@ -14,6 +14,7 @@ const TABLE_COLUMNS = {
   transfers:       { table: 'transfers',       file: 'transfers',      columns: ['from_stop_id','to_stop_id','transfer_type','min_transfer_time'], conflict: null },
   fare_attributes: { table: 'fare_attributes', file: 'fare_attributes',columns: ['fare_id','price','currency_type','payment_method','transfers'], conflict: null },
   fare_rules:      { table: 'fare_rules',      file: 'fare_rules',     columns: ['fare_id','origin_id','destination_id'], conflict: null },
+  feed_info:       { table: 'feed_info',       file: 'feed_info',      columns: ['feed_publisher_name','feed_publisher_url','feed_lang','default_lang','feed_start_date','feed_end_date','feed_version','feed_contact_email','feed_contact_url'], conflict: null },
 };
 
 async function bulkInsert(tableName, columns, rows, feedSource, isFirstChunk = false) {
