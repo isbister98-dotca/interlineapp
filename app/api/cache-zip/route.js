@@ -2,9 +2,9 @@ import AdmZip from 'adm-zip';
 import { parse } from 'csv-parse/sync';
 import { sql } from '../../../lib/db.js';
 
-const CHUNK_ROWS = 5000; // rows per chunk for large files
-const CHUNKED_FILES = ['shapes', 'stop_times']; // these get chunked, not full-text cached
-const SKIP_FILES = ['stop_times']; // handled entirely by Supabase Edge Function
+const CHUNK_ROWS = 5000;
+const CHUNKED_FILES = ['shapes', 'stop_times'];
+const SKIP_FILES = []; // nothing skipped anymore — all handled here
 
 export async function POST(request) {
   try {
@@ -38,17 +38,6 @@ export async function POST(request) {
         const rawContent = entry.getData().toString('utf8');
         // Strip UTF-8 BOM if present (GO Transit files have this)
         const content = rawContent.charCodeAt(0) === 0xFEFF ? rawContent.slice(1) : rawContent;
-
-        if (SKIP_FILES.includes(filename)) {
-          // Parse just to count rows, don't cache — Edge Function handles this
-          const rows = parse(content, {
-            columns: true, skip_empty_lines: true, trim: true,
-            relax_column_count: true, relax_quotes: true, skip_records_with_error: true
-          });
-          fileSizes[filename] = rows.length;
-          fileSizes[`${filename}_note`] = 'handled_by_edge_function';
-          continue;
-        }
 
         const rows = parse(content, {
           columns: true, skip_empty_lines: true, trim: true,
