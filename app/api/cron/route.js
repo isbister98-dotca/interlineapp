@@ -43,6 +43,7 @@ export async function GET(request) {
         );
 
         if (!feedInfoEntry) {
+          await sql`UPDATE feed_sources SET last_version_check = NOW() WHERE url = ${feed.url}`;
           results.push({ feed: feed.name, status: 'skipped', reason: 'no feed_info.txt' });
           continue;
         }
@@ -50,6 +51,7 @@ export async function GET(request) {
         const content = feedInfoEntry.getData().toString('utf8');
         const lines = content.split('\n').filter(l => l.trim());
         if (lines.length < 2) {
+          await sql`UPDATE feed_sources SET last_version_check = NOW() WHERE url = ${feed.url}`;
           results.push({ feed: feed.name, status: 'skipped', reason: 'empty feed_info.txt' });
           continue;
         }
