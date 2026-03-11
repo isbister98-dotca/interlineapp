@@ -9,7 +9,7 @@ const TABLE_COLUMNS = {
   calendar:        { table: 'calendar',        file: 'calendar',       columns: ['service_id','monday','tuesday','wednesday','thursday','friday','saturday','sunday','start_date','end_date'], conflict: null },
   calendar_dates:  { table: 'calendar_dates',  file: 'calendar_dates', columns: ['service_id','date','exception_type'], conflict: null },
   shapes:          { table: 'shapes',          file: 'shapes',         columns: ['shape_id','shape_pt_lat','shape_pt_lon','shape_pt_sequence','shape_dist_traveled'], conflict: null, chunked: true },
-  feed_info:       { table: 'feed_info',       file: 'feed_info',      columns: ['feed_publisher_name','feed_publisher_url','feed_lang','default_lang','feed_start_date','feed_end_date','feed_version','feed_contact_email','feed_contact_url'], conflict: null },
+  stop_times:      { table: 'stop_times',      file: 'stop_times',     columns: ['trip_id','arrival_time','departure_time','stop_id','stop_sequence','stop_headsign','pickup_type','drop_off_type','shape_dist_traveled'], conflict: null, chunked: true },
   stop_amenities:  { table: 'stop_amenities',  file: 'stop_amenities', columns: ['stop_id','shelter','washroom','bike_rack','bench'], conflict: null },
   transfers:       { table: 'transfers',       file: 'transfers',      columns: ['from_stop_id','to_stop_id','transfer_type','min_transfer_time'], conflict: null },
   fare_attributes: { table: 'fare_attributes', file: 'fare_attributes',columns: ['fare_id','price','currency_type','payment_method','transfers'], conflict: null },
@@ -42,11 +42,6 @@ export async function POST(request) {
   try {
     const { url, name, tableKey, offset = 0 } = await request.json();
     if (!url || !name || !tableKey) return Response.json({ success: false, error: 'Missing url, name, or tableKey' }, { status: 400 });
-
-    // stop_times is handled entirely by Supabase Edge Function
-    if (tableKey === 'stop_times') {
-      return Response.json({ success: true, inserted: 0, total: 0, done: true, skipped: true, message: 'Handled by Edge Function' });
-    }
 
     const def = TABLE_COLUMNS[tableKey];
     if (!def) return Response.json({ success: false, error: `Unknown table: ${tableKey}` }, { status: 400 });
