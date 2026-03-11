@@ -16,7 +16,7 @@ const TABLE_SEQUENCE = [
   { key: 'fare_rules',      label: 'Fare Rules',       chunked: false },
   { key: 'stop_amenities',  label: 'Stop Amenities',   chunked: false },
   { key: 'shapes',          label: 'Shapes',           chunked: true  },
-  // stop_times is handled separately via Edge Function
+  { key: 'stop_times',      label: 'Stop Times',       chunked: true  },
 ]
 
 function ProgressRow({ table, status }) {
@@ -291,64 +291,15 @@ export default function AdminPage() {
                   background: phase === 'done' ? '#008000' : '#0070f3', borderRadius: 3, transition: 'width 0.3s' }} />
               </div>
               {TABLE_SEQUENCE.map(t => <ProgressRow key={t.key} table={t} status={tableStatus} />)}
-              {/* Stop times note */}
-              <div style={{ padding: '0.5rem 0.75rem', fontSize: '0.85rem', color: '#888', fontStyle: 'italic' }}>
-                ⚡ Stop Times — load separately using the Edge Function section below
-              </div>
             </>
           )}
           {phase === 'done' && (
             <p style={{ margin: '0.75rem 0 0', fontSize: '0.85rem', color: '#008000', fontWeight: 'bold' }}>
-              ✅ All tables loaded! Now load Stop Times below using the Edge Function.
+              ✅ All tables loaded! Click "Refresh counts" to see updated totals.
             </p>
           )}
         </div>
       )}
-
-      {/* Stop Times — Edge Function */}
-      <div style={{ background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8, padding: '1rem', marginBottom: '1.5rem' }}>
-        <h2 style={{ margin: '0 0 0.25rem', fontSize: '1rem' }}>⚡ Stop Times (Edge Function)</h2>
-        <p style={{ color: '#666', fontSize: '0.83rem', margin: '0 0 0.75rem' }}>
-          Stop times are loaded via Supabase Edge Function — handles large files (200MB+) with no timeout.
-          Automatically skips if the feed version hasn't changed.
-        </p>
-        {loadedFeeds.length === 0 ? (
-          <p style={{ color: '#aaa', fontSize: '0.85rem', margin: 0 }}>No feeds loaded yet — load a feed above first.</p>
-        ) : loadedFeeds.map(feed => {
-            const st = stopTimesStatus[feed.url]
-            return (
-              <div key={feed.url} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0', borderBottom: '1px solid #f5f5f5', flexWrap: 'wrap' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{feed.name}</div>
-                  {st && (
-                    <div style={{ fontSize: '0.78rem', marginTop: 2,
-                      color: st.status === 'done' ? '#008000' : st.status === 'error' ? '#c00' : st.status === 'skipped' ? '#888' : '#555' }}>
-                      {st.message}
-                    </div>
-                  )}
-                  {feed.stop_times_loaded_at && !st && (
-                    <div style={{ fontSize: '0.75rem', color: '#aaa' }}>
-                      Last loaded: {new Date(feed.stop_times_loaded_at).toLocaleString()} • {feed.stop_times_row_count?.toLocaleString()} rows
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button onClick={() => loadStopTimes(feed, false)}
-                    disabled={st?.status === 'loading'}
-                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', background: '#0070f3', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer' }}>
-                    {st?.status === 'loading' ? '⏳ Loading...' : 'Load / Update'}
-                  </button>
-                  <button onClick={() => loadStopTimes(feed, true)}
-                    disabled={st?.status === 'loading'}
-                    title="Force reload even if version unchanged"
-                    style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', background: '#fff', color: '#666', border: '1px solid #ccc', borderRadius: 5, cursor: 'pointer' }}>
-                    Force Reload
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-      </div>
 
       {/* Loaded Feeds */}
       {loadedFeeds.length > 0 && (
