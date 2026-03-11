@@ -77,7 +77,9 @@ export async function POST(request) {
       
       if (done) {
         await sql`UPDATE feed_sources SET status = 'loaded', loaded_at = NOW() WHERE url = ${url}`;
-        await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
+        if (tableKey === 'stop_times') {
+          await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
+        }
       }
 
       return Response.json({ success: true, inserted, total, done, offset });
