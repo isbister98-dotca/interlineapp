@@ -2,9 +2,10 @@ import { sql } from '../../../lib/db.js'
 
 export async function GET() {
   try {
+    await sql`SET search_path TO public, realtime`
     const rows = await sql`
       SELECT vehicles, agency_status, updated_at
-      FROM realtime.vehicle_cache
+      FROM vehicle_cache
       WHERE id = 1
       LIMIT 1
     `
