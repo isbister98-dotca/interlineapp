@@ -38,7 +38,6 @@ async function bulkInsert(tableName, columns, rows, feedSource, isFirstChunk = f
     const values = batch.map(row => {
       const vals = [feedSource, ...columns.map(c => {
         let v = row[c] ?? null;
-        // Convert time columns to integer seconds
         if (isStopTimes && (c === 'arrival_time' || c === 'departure_time')) {
           v = timeToSeconds(v);
           return v === null ? 'NULL' : String(v);
@@ -57,10 +56,12 @@ async function bulkInsert(tableName, columns, rows, feedSource, isFirstChunk = f
 export async function POST(request) {
   try {
     const { url, name, tableKey, offset = 0 } = await request.json();
-    if (!url || !name || !tableKey) return Response.json({ success: false, error: 'Missing url, name, or tableKey' }, { status: 400 });
+    if (!url || !name || !tableKey)
+      return Response.json({ success: false, error: 'Missing url, name, or tableKey' }, { status: 400 });
 
     const def = TABLE_COLUMNS[tableKey];
-    if (!def) return Response.json({ success: false, error: `Unknown table: ${tableKey}` }, { status: 400 });
+    if (!def)
+      return Response.json({ success: false, error: `Unknown table: ${tableKey}` }, { status: 400 });
 
     const isStopTimes = tableKey === 'stop_times';
     let rows, total, done;
@@ -88,8 +89,12 @@ export async function POST(request) {
 
       if (done) {
         await sql`UPDATE feed_sources SET status = 'loaded', loaded_at = NOW() WHERE url = ${url}`;
-        // Clean up entire feed cache when done, not just stop_times
+        // Clean up cache for this feed
         await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
+        // If stop_times just finished, prune to 14-day window immediately
+        if (isStopTimes) {
+          await sql`SELECT public.prune_stop_times_window()`;
+        }
       }
 
       return Response.json({ success: true, inserted, total, done, offset });
