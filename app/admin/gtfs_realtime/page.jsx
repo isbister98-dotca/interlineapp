@@ -91,7 +91,7 @@ function FeedRow({ feed, onToggle, onDelete, toggling, fieldMap }) {
   const isToggling = toggling === feed.id
   const hasError = !!feed.last_error
   const [expanded, setExpanded] = useState(false)
-  const agencyFields = fieldMap[feed.agency] ?? {}
+  {feed.feed_type === 'vehicles' ? (   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>     {ALL_FIELDS.map(f => (       <FieldTag key={f.key} label={f.label} present={!!agencyFields[f.key]} />     ))}   </div> ) : feed.feed_type === 'trip_updates' ? (   <span style={{ fontSize: '0.75rem', color: '#555' }}>     Fields: Trip ID, Route ID, Direction, Stop Time Updates (arrival/departure delay, stop ID, sequence), Schedule Relationship, Vehicle ID, Delay   </span> ) : feed.feed_type === 'alerts' ? (   <span style={{ fontSize: '0.75rem', color: '#555' }}>     Fields: Header, Description, Cause, Effect, Severity, Active Periods, Informed Entities (route, stop, trip, agency), URL   </span> ) : null}
 
   return (
     <>
