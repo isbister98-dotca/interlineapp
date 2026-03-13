@@ -17,21 +17,36 @@ const TABLE_COLUMNS = {
   feed_info:       { table: 'feed_info',       file: 'feed_info',      columns: ['feed_publisher_name','feed_publisher_url','feed_lang','default_lang','feed_start_date','feed_end_date','feed_version','feed_contact_email','feed_contact_url'], conflict: null },
 };
 
-async function bulkInsert(tableName, columns, rows, feedSource, isFirstChunk = false) {
+// Convert "HH:MM:SS" to integer seconds since midnight
+// GTFS allows times > 24:00:00 for trips past midnight
+function timeToSeconds(t) {
+  if (!t || t === '') return null;
+  const parts = t.split(':');
+  if (parts.length !== 3) return null;
+  return parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseInt(parts[2], 10);
+}
+
+async function bulkInsert(tableName, columns, rows, feedSource, isFirstChunk = false, isStopTimes = false) {
   if (!rows || rows.length === 0) return 0;
   const BATCH = 500;
   let inserted = 0;
-  // Delete existing rows for this feed on first chunk only
   if (isFirstChunk) {
     await sql.unsafe(`DELETE FROM ${tableName} WHERE feed_source = '${feedSource.replace(/'/g, "''")}'`);
   }
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    const values = batch.map(row =>
-      `(${[feedSource, ...columns.map(c => row[c] ?? null)]
-        .map(v => v === null ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`)
-        .join(',')})`
-    ).join(',');
+    const values = batch.map(row => {
+      const vals = [feedSource, ...columns.map(c => {
+        let v = row[c] ?? null;
+        // Convert time columns to integer seconds
+        if (isStopTimes && (c === 'arrival_time' || c === 'departure_time')) {
+          v = timeToSeconds(v);
+          return v === null ? 'NULL' : String(v);
+        }
+        return v === null ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`;
+      })];
+      return `(${vals.join(',')})`;
+    }).join(',');
     const colList = ['feed_source', ...columns].join(',');
     await sql.unsafe(`INSERT INTO ${tableName} (${colList}) VALUES ${values}`);
     inserted += batch.length;
@@ -47,54 +62,45 @@ export async function POST(request) {
     const def = TABLE_COLUMNS[tableKey];
     if (!def) return Response.json({ success: false, error: `Unknown table: ${tableKey}` }, { status: 400 });
 
+    const isStopTimes = tableKey === 'stop_times';
     let rows, total, done;
 
     if (def.chunked) {
-      // ── Chunked file (shapes) ──
       const metaResult = await sql`
         SELECT content FROM gtfs_cache WHERE feed_url = ${url} AND filename = ${def.file + '_meta'}
       `;
-
       if (!metaResult || metaResult.length === 0) {
         return Response.json({ success: true, inserted: 0, total: 0, done: true, message: `${def.file} not found in cache` });
       }
-
       const meta = JSON.parse(metaResult[0].content);
       total = meta.totalRows;
       const totalChunks = meta.totalChunks;
       const chunkKey = `${def.file}_chunk_${offset}`;
-
       const chunkResult = await sql`
         SELECT content FROM gtfs_cache WHERE feed_url = ${url} AND filename = ${chunkKey}
       `;
-
       if (!chunkResult || chunkResult.length === 0) {
         return Response.json({ success: true, inserted: 0, total, done: true, message: `Chunk ${offset} not found` });
       }
-
       rows = JSON.parse(chunkResult[0].content);
       done = offset >= totalChunks - 1;
-      const inserted = await bulkInsert(def.table, def.columns, rows, name, offset === 0);
-      
+      const inserted = await bulkInsert(def.table, def.columns, rows, name, offset === 0, isStopTimes);
+
       if (done) {
         await sql`UPDATE feed_sources SET status = 'loaded', loaded_at = NOW() WHERE url = ${url}`;
-        if (tableKey === 'stop_times') {
-          await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
-        }
+        // Clean up entire feed cache when done, not just stop_times
+        await sql`DELETE FROM gtfs_cache WHERE feed_url = ${url}`;
       }
 
       return Response.json({ success: true, inserted, total, done, offset });
 
     } else {
-      // ── Regular full-text file ──
       const cached = await sql`
         SELECT content, row_count FROM gtfs_cache WHERE feed_url = ${url} AND filename = ${def.file}
       `;
-
       if (!cached || cached.length === 0) {
         return Response.json({ success: true, inserted: 0, total: 0, done: true, message: `${def.file}.txt not found in this feed` });
       }
-
       const rawContent = cached[0].content;
       const cleanContent = rawContent.charCodeAt(0) === 0xFEFF ? rawContent.slice(1) : rawContent;
       rows = parse(cleanContent, {
@@ -104,21 +110,19 @@ export async function POST(request) {
       total = rows.length;
       done = true;
 
-      // Boolean conversion for calendar
       if (tableKey === 'calendar') {
         rows = rows.map(r => ({
           ...r,
-          monday: r.monday === '1' ? 'true' : 'false',
-          tuesday: r.tuesday === '1' ? 'true' : 'false',
+          monday:    r.monday    === '1' ? 'true' : 'false',
+          tuesday:   r.tuesday   === '1' ? 'true' : 'false',
           wednesday: r.wednesday === '1' ? 'true' : 'false',
-          thursday: r.thursday === '1' ? 'true' : 'false',
-          friday: r.friday === '1' ? 'true' : 'false',
-          saturday: r.saturday === '1' ? 'true' : 'false',
-          sunday: r.sunday === '1' ? 'true' : 'false',
+          thursday:  r.thursday  === '1' ? 'true' : 'false',
+          friday:    r.friday    === '1' ? 'true' : 'false',
+          saturday:  r.saturday  === '1' ? 'true' : 'false',
+          sunday:    r.sunday    === '1' ? 'true' : 'false',
         }));
       }
 
-      // Store feed_version when loading feed_info
       if (tableKey === 'feed_info' && rows.length > 0) {
         const version = rows[0].feed_version || null;
         if (version) {
@@ -126,7 +130,7 @@ export async function POST(request) {
         }
       }
 
-      const inserted = await bulkInsert(def.table, def.columns, rows, name, true);
+      const inserted = await bulkInsert(def.table, def.columns, rows, name, true, isStopTimes);
       return Response.json({ success: true, inserted, total, done, offset });
     }
   } catch (error) {
