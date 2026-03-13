@@ -335,7 +335,7 @@ export default function GtfsRealtimePage() {
         for (const v of cacheData.vehicles) {
           if (!map[v.agency]) map[v.agency] = {}
           for (const f of ALL_FIELDS) {
-            if (v[f.key] !== undefined && v[f.key] !== null) {
+            if (v[f.key] !== undefined && v[f.key] !== null && v[f.key] !== '') {
               map[v.agency][f.key] = true
             }
           }
