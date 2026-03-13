@@ -91,6 +91,7 @@ function FeedRow({ feed, onToggle, onDelete, toggling, fieldMap }) {
   const isToggling = toggling === feed.id
   const hasError = !!feed.last_error
   const [expanded, setExpanded] = useState(false)
+  const agencyFields = fieldMap[feed.agency] ?? {}
 
 
   return (
