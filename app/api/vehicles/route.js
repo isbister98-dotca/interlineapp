@@ -4,7 +4,7 @@ export async function GET() {
   try {
     const rows = await sql`
       SELECT vehicles, agency_status, updated_at
-      FROM gtfs_realtime.vehicle_cache
+      FROM vehicle_cache
       WHERE id = 1
       LIMIT 1
     `
