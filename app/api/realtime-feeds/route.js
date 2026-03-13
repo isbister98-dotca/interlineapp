@@ -7,7 +7,7 @@ export async function GET() {
         id, agency, feed_type, url, enabled, fetch_method,
         vault_secret_name, refresh_seconds,
         last_polled_at, last_count, last_error
-      FROM gtfs_realtime.feeds
+      FROM feeds
       ORDER BY agency, feed_type
     `
     return Response.json({ feeds })
@@ -23,7 +23,7 @@ export async function PATCH(request) {
       return Response.json({ error: 'id and enabled are required' }, { status: 400 })
     }
     await sql`
-      UPDATE gtfs_realtime.feeds
+      UPDATE feeds
       SET enabled = ${enabled}, updated_at = NOW()
       WHERE id = ${id}
     `
