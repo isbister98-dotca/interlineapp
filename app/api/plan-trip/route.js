@@ -283,7 +283,9 @@ async function findTransferRides(originIds, destIds, departSecs, originMap, dest
         COALESCE(r.route_short_name, r.route_long_name) AS r2_name,
         r.route_color AS r2_color, r.route_id AS r2_id,
         t.trip_headsign AS r2_headsign,
-        s.stop_name AS xfer_board_name
+        s.stop_name AS xfer_board_name,
+        s.stop_lat::float8 AS xfer_board_lat,
+        s.stop_lon::float8 AS xfer_board_lng
       FROM to_hits th
       JOIN trips  t ON t.trip_id  = th.trip_id  AND t.feed_source = th.feed_source
       JOIN routes r ON r.route_id = t.route_id AND r.feed_source = th.feed_source
@@ -291,6 +293,7 @@ async function findTransferRides(originIds, destIds, departSecs, originMap, dest
     )
     SELECT DISTINCT ON (xfer_board_sid, r2_name)
       feed_source, xfer_board_sid, xfer_board_time, xfer_board_name,
+      xfer_board_lat, xfer_board_lng,
       alight_sid, alight_time,
       r2_name, r2_color, r2_id, r2_headsign
     FROM with_routes
@@ -352,6 +355,7 @@ async function findTransferRides(originIds, destIds, departSecs, originMap, dest
           alight_time_secs: l1.xfer_arrive,
           // Transfer info
           transfer_stop: l2.xfer_board_name,
+          transfer_coord: [l2.xfer_board_lng, l2.xfer_board_lat],
           transfer_wait_secs: xferWait,
           // Second leg
           route2: l2.r2_name,
